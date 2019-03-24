@@ -92,7 +92,9 @@ void check_error(int error);
   configure the software.
 
 ***********************************************************/
-const uint8_t TOTAL_IC = 2;//!<number of ICs in the daisy chain
+const uint8_t TOTAL_IC = 8;//!<number of ICs in the daisy chain
+const uint8_t TOTAL_CH = 18; // number of channel used per ADC
+const uint8_t TOTAL_NTC = 8; // number of temperatures per ADC
 
 //ADC Command Configurations
 const uint8_t ADC_OPT = ADC_OPT_DISABLED; // See ltc6813_daisy.h for Options
@@ -107,7 +109,7 @@ const uint16_t MEASUREMENT_LOOP_TIME = 500;//milliseconds(mS)
 //Under Voltage and Over Voltage Thresholds
 const uint16_t OV_THRESHOLD = 41000; // Over voltage threshold ADC Code. LSB = 0.0001
 const uint16_t UV_THRESHOLD = 30000; // Under voltage threshold ADC Code. LSB = 0.0001
-
+const uint16_t MAXTEMP = 60;         // Over temperature GRADI CENTIGRADI
 //Loop Measurement Setup These Variables are ENABLED or DISABLED Remember ALL CAPS
 const uint8_t WRITE_CONFIG = DISABLED; // This is ENABLED or DISABLED
 const uint8_t READ_CONFIG = DISABLED; // This is ENABLED or DISABLED
@@ -126,25 +128,28 @@ const uint8_t PRINT_PEC = DISABLED; //This is ENABLED or DISABLED
   on the number of ICs on the stack
  ******************************************************/
 
-cell_asic bms_ic[TOTAL_IC];
-
+cell_asic bms_ic[TOTAL_IC];                   //array di tensioni
+int8_t temperatura[TOTAL_IC][TOTAL_NTC];      //array di temperature
 
 /*!**********************************************************************
   \brief  Inititializes hardware and variables
  ***********************************************************************/
 
-
 /*!**********************************************************************
   \struttura per gli errori
  ***********************************************************************/
 struct control{
-  int8_t id;                   //identificatore 
-  boolean flag;                //0->okay  1->errore
+  int8_t id;                   //identificatore temporanea
+  int8_t posiz;                //posizione dell'errore
+  /*sarà un numero che conta tutte le celle/ntc, 
+  ed ogniuno avrà il proprio numero seriale
+  questo serve perchè abbiamo una lista dinamica*/
   unsigned long time;          //momento in cui si verifica il primo errore
+  control* succ;
 };
-control problem[TOTAL_IC][16];
-void init_problem (control);
-
+typedef control* lista;
+lista primo_elemento=0;   //inizializzo il primo puntatore della lista a 0
+control elemento; //elemento generico della lista
 
 void setup()
 {
@@ -154,7 +159,7 @@ void setup()
   ltc681x_init_cfg(TOTAL_IC, bms_ic);
   ltc6813_reset_crc_count(TOTAL_IC, bms_ic);
   ltc6813_init_reg_limits(TOTAL_IC, bms_ic);
-  init_problem (problem);
+  init_problem (error_OV);
 }
 
 void loop(){
@@ -173,9 +178,9 @@ void loop(){
  
     voltage_measurment(); //leggo le tensioni dall'adc
 
-    float cell_v[TOTAL_IC][16];
+    float cell_v[TOTAL_IC][TOTAL_CH];
     read_voltages(cell_v);
-   print_voltages(cell_v);//--interfaccia utente temporanea--//
+    print_voltages(cell_v);//--interfaccia utente temporanea--//
   }
 }
 
@@ -184,15 +189,70 @@ void loop(){
 /******************************************************************************
 FUNCTIONS
 *******************************************************************************/
-void init_problem (control problem[][16]){
-  for(uint8_t i=0;i<2;i++){
-		for(uint8_t j=0;j<16;j++){
-			problem[i][j].id=j;
-			problem[i][j].flag=0;
-      problem[i][j].time=0;
+void new_error(lista& inizio,control e){      //creare un elemento della lista errori
+  lista p = 0, q, r;
+  for (q = inizio; q != 0; q = q->succ) p = q;
+  r = new control;
+ *r = e;
+  r->succ = q;
+  if (q == inizio) inizio = r;
+  else p->succ = r;
+}
+
+bool del_error(lista& inizio, control& e){    //elimina un elemento della lista errori
+  lista p=0, q;
+  for (q=inizio; q!=0 ; q=q->succ) p=q;
+  e = *q;
+  if (q==0) return false;
+  if (q==inizio) inizio = q->succ;
+  else p->succ=q->succ;
+  delete q;
+  return true;
+}
+
+
+void error_check(){                   //controllo degli errori
+  for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
+		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
+      /**overcurrent**/
+      double MAXVOLTAGE = OV_THRESHOLD;
+      if(bms_ic[current_ic].cells.c_codes[current_ch] * 0.0001 > MAXVOLTAGE){
+        for (lista q=primo_elemento; q!=0 || q->posiz != (current_ic*current_ch)+current_ch; q=q->succ){}
+        //cerca il nostro errore
+        if(q==0) {
+          lista primo_elemento=*elemento;
+        }
+        new_error(q,elemento);         //se c'è un error_OV nuovo lo segno
+          q->time=millis();        //e inizializzo il tempo.
+          q->flag=1;               //se un error_OV è vecchio non c'è bisogno
+        }                            //di inizalizzare 
+        else {
+        q->flag=0;              //in asssenza di error_OV il flag è zero
+        }
+    }
+      /**overtemperature**/
+    for(uint8_t current_ntc=0;current_ntc<TOTAL_NTC;current_ntc++){
+      if(temperatura[current_ic][current_ntc] > MAXTEMP){
+        if (error_OT[current_ic][current_ntc].flag==0){           //se c'è un error_OV nuovo lo segno 
+          error_OT[current_ic][current_ntc].time=millis();        //e inizializzo il tempo.
+          error_OT[current_ic][current_ntc].flag=1;               //se un error_OV è vecchio non c'è bisogno
+        }                                                       //di inizalizzare
+      }
+      else error_OT[current_ic][current_ntc].flag=0;              //in asssenza di error_OV il flag è zero
+     }
+  }
+}
+
+void init_problem (control error_OV[][TOTAL_CH]){
+  for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
+		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
+			error_OV[current_ic][current_ch].id=current_ch;
+			error_OV[current_ic][current_ch].flag=0;
+      error_OV[current_ic][current_ch].time=0;
 		}
 	}
 }
+
 
 void voltage_measurment(){
   wakeup_sleep(TOTAL_IC);
@@ -206,7 +266,7 @@ void voltage_measurment(){
   //check_error(error);
 }
 
-void read_voltages(float cell_voltage[][16]){
+void read_voltages(float cell_voltage[][TOTAL_CH]){
     for (int current_ic = 0 ; current_ic < TOTAL_IC; current_ic++) {
       for (int i = 0; i < bms_ic[0].ic_reg.cell_channels; i++) {
         if ((i!=9)&&(i!=18)) {
@@ -218,13 +278,13 @@ void read_voltages(float cell_voltage[][16]){
     }
   }
 
-void print_voltages(float cell_voltage[][16]){
+void print_voltages(float cell_voltage[][TOTAL_CH]){
   Serial.println();
   for(int j=0;j<2;j++){
     Serial.print(" IC ");
     Serial.print(j,DEC);
     Serial.print(", ");
-    for (int i=0;i<16;i++){
+    for (int i=0;i<TOTAL_CH;i++){
       Serial.print(" C");
       Serial.print(i+1,DEC);
       Serial.print(":");
