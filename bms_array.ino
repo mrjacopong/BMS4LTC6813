@@ -110,6 +110,11 @@ const uint16_t MEASUREMENT_LOOP_TIME = 500;//milliseconds(mS)
 const uint16_t OV_THRESHOLD = 41000; // Over voltage threshold ADC Code. LSB = 0.0001
 const uint16_t UV_THRESHOLD = 30000; // Under voltage threshold ADC Code. LSB = 0.0001
 const uint16_t MAXTEMP = 60;         // Over temperature GRADI CENTIGRADI
+double MAXVOLTAGE = OV_THRESHOLD;    // per convertirla in double nella funzione error_check
+const uint16_t OV_TIME_LIMIT=500;    // limite di tempo in millisecondi OV
+const uint16_t OT_TIME_LIMIT=1000;    // limite di tempo in millisecondi OT
+
+
 //Loop Measurement Setup These Variables are ENABLED or DISABLED Remember ALL CAPS
 const uint8_t WRITE_CONFIG = DISABLED; // This is ENABLED or DISABLED
 const uint8_t READ_CONFIG = DISABLED; // This is ENABLED or DISABLED
@@ -139,7 +144,6 @@ int8_t temperatura[TOTAL_IC][TOTAL_NTC];      //array di temperature
   \struttura per gli errori
  ***********************************************************************/
 struct control{
-  int8_t id;                   //identificatore temporanea
   boolean flag;                //0->okay  1->errore
   unsigned long time;          //momento in cui si verifica il primo errore
 };
@@ -167,7 +171,7 @@ void loop(){
   int8_t readIC = 0;
   char input = 0;
   //--interfaccia utente temporanea--//
-  if (Serial.available()){           // Check for user inpu
+  if (Serial.available()){           // Check for user input
     uint8_t user_command;
     Serial.println("inserisci un numero qualsiasi per lanciare il programma");
     user_command = read_int();      // whait for a key
@@ -175,10 +179,15 @@ void loop(){
    //---------------------------------//
  
     voltage_measurment(); //leggo le tensioni dall'adc
+    
+    /*debug*/
+    print_cells_debug();
 
+    /*
     float cell_v[TOTAL_IC][TOTAL_CH];
     read_voltages(cell_v);
     print_voltages(cell_v);//--interfaccia utente temporanea--//
+  */
   }
 }
 
@@ -192,35 +201,50 @@ void error_check(){                   //controllo degli errori
   for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
       /**overcurrent**/
-      double MAXVOLTAGE = OV_THRESHOLD;
-      if(bms_ic[current_ic].cells.c_codes[current_ch] * 0.0001 > MAXVOLTAGE){
-        if (error_OV[current_ic][current_ch].flag==0){           //se c'è un error_OV nuovo lo segno 
-          error_OV[current_ic][current_ch].time=millis();        //e inizializzo il tempo.
-          error_OV[current_ic][current_ch].flag=1;               //se un error_OV è vecchio non c'è bisogno
-        }                                                       //di inizalizzare
-      } 
-      else {
-        error_OV[current_ic][current_ch].flag=0;              //in asssenza di error_OV il flag è zero
-
+      //legge in più anche la cella 9 e 18 che noi non utilizziamo
+      if ((current_ch == 9) || (current_ch == 18)){}
+      else{
+        if(bms_ic[current_ic].cells.c_codes[current_ch]> MAXVOLTAGE){
+          if (error_OV[current_ic][current_ch].flag==0){           //se c'è un error_OV nuovo lo segno 
+            error_OV[current_ic][current_ch].time=millis();        //e inizializzo il tempo.
+            error_OV[current_ic][current_ch].flag=1;               //se un error_OV è vecchio non c'è bisogno
+          }                                                        //di inizalizzare
+          else{
+          time_check(error_OV[current_ic][current_ch].time, OV_TIME_LIMIT); 
+          } 
+        }
+        else {
+          error_OV[current_ic][current_ch].flag=0;              //in assenza di error_OV il flag è zero
+        }
       }
     }
       /**overtemperature**/
     for(uint8_t current_ntc=0;current_ntc<TOTAL_NTC;current_ntc++){
-      if(temperatura[current_ic][current_ntc] > MAXTEMP){
-        if (error_OT[current_ic][current_ntc].flag==0){           //se c'è un error_OV nuovo lo segno 
+      if(bms_ic[current_ic].aux.a_codes[current_ntc]  > MAXTEMP){
+        if (error_OT[current_ic][current_ntc].flag==0){           //se c'è un error_OT nuovo lo segno 
           error_OT[current_ic][current_ntc].time=millis();        //e inizializzo il tempo.
           error_OT[current_ic][current_ntc].flag=1;               //se un error_OV è vecchio non c'è bisogno
-        }                                                       //di inizalizzare
+        }                                                         //di inizalizzare
+        else{
+         time_check(error_OT[current_ic][current_ntc].time, OT_TIME_LIMIT); 
+        }
       }
       else error_OT[current_ic][current_ntc].flag=0;              //in asssenza di error_OV il flag è zero
      }
   }
 }
 
+void time_check(unsigned long t_inizio ,uint16_t durata_max ){
+  /*controllo della durata dell'errore*/
+  if (millis()-t_inizio>durata_max){
+    /*shutdown!!!! macello*/
+  }
+}
+
+
 void init_error_ov (control error_OV[][TOTAL_CH]){
   for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
-			error_OV[current_ic][current_ch].id=current_ch;
 			error_OV[current_ic][current_ch].flag=0;
       error_OV[current_ic][current_ch].time=0;
 		}
@@ -229,7 +253,6 @@ void init_error_ov (control error_OV[][TOTAL_CH]){
 void init_error_ot (control error_OV[][TOTAL_NTC]){
  for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ntc=0;current_ntc<TOTAL_NTC;current_ntc++){
-			error_OV[current_ic][current_ntc].id=current_ntc;
 			error_OV[current_ic][current_ntc].flag=0;
       error_OV[current_ic][current_ntc].time=0;
 		}
@@ -249,6 +272,28 @@ void voltage_measurment(){
   //check_error(error);
 }
 
+void print_cells_debug()
+{
+  for (int current_ic = 0 ; current_ic < TOTAL_IC; current_ic++)
+  {
+    Serial.print(" IC ");
+    Serial.print(current_ic+1,DEC);
+    Serial.print(", ");
+    for (int i=0; i<bms_ic[0].ic_reg.cell_channels; i++)
+    {
+      Serial.print(" C");
+      Serial.print(i+1,DEC);
+      Serial.print(":");
+      Serial.print(bms_ic[current_ic].cells.c_codes[i]*0.0001,4); //il 4 potrebbe dare problemi, da vedere
+     //stampa pure il flag
+      Serial.print(",");
+    }
+    Serial.println();
+  }
+  Serial.println();
+}
+
+/*
 void read_voltages(float cell_voltage[][TOTAL_CH]){
     for (int current_ic = 0 ; current_ic < TOTAL_IC; current_ic++) {
       for (int i = 0; i < bms_ic[0].ic_reg.cell_channels; i++) {
@@ -276,4 +321,4 @@ void print_voltages(float cell_voltage[][TOTAL_CH]){
     }
     Serial.println();
   }
-}
+}*/
