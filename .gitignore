@@ -1,13 +1,1 @@
-.vscode/arduino.json
-.vscode/c_cpp_properties.json
-.vscode/ipch/c18707464de2152/BMS.ipch
-.vscode/ipch/c18707464de2152/mmap_address.bin
-.vscode/ipch/f6f6b4c20c4fca98/mmap_address.bin
-.vscode/ipch/a501fef930893987/mmap_address.bin
-.vscode/ipch/63d8ce7f43408977/mmap_address.bin
-.vscode/ipch/7e983ec7f81b4f62/BMS_LISTA.ipch
-.vscode/ipch/7e983ec7f81b4f62/mmap_address.bin
-.vscode/ipch/5539ef5e44bc6fac/mmap_address.bin
-.vscode/ipch/5539ef5e44bc6fac/BMS_ARRAY.ipch
-.vscode/ipch/a501fef930893987/BMS_LISTA.1.ipch
-.vscode/ipch/f6f6b4c20c4fca98/BMS.ipch
+.vscode
