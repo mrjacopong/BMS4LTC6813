@@ -59,6 +59,22 @@
   Copyright 2017 Linear Technology Corp. (LTC)
 */
 
+//--------------------compatibilità con schede non arduino uno-----------------------------//
+
+/*modifiche su LT_SPI.cpp
+FUNCTION-> void spi_write(int8_t  data) :175
+  SPI.transfer(data);
+  //SPDR = data;                  
+	//while (!(SPSR & _BV(SPIF)));  
+
+FUNCTION-> int8_t spi_read(int8_t  data) :183    
+  int8_t receivedVal = SPI.transfer(data);
+	return receivedVal;
+	//SPDR = data;
+	//while (!(SPSR & _BV(SPIF)));
+	//return SPDR; 
+*/
+
 
 #include <Arduino.h>
 #include <stdint.h>
@@ -92,7 +108,7 @@ void check_error(int error);
   configure the software.
 
 ***********************************************************/
-const uint8_t TOTAL_IC = 8;//!<number of ICs in the daisy chain
+const uint8_t TOTAL_IC = 1;//!<number of ICs in the daisy chain
 const uint8_t TOTAL_CH = 18; // number of channel used per ADC
 const uint8_t TOTAL_NTC = 8; // number of temperatures per ADC
 
@@ -179,15 +195,9 @@ void loop(){
    //---------------------------------//
  
     voltage_measurment(); //leggo le tensioni dall'adc
-    
+    error_check();//controllo degli errori e scrittura della matrice di errori
     /*debug*/
     print_cells_debug();
-
-    /*
-    float cell_v[TOTAL_IC][TOTAL_CH];
-    read_voltages(cell_v);
-    print_voltages(cell_v);//--interfaccia utente temporanea--//
-  */
   }
 }
 
@@ -201,7 +211,7 @@ void error_check(){                   //controllo degli errori
   for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
       /**overcurrent**/
-      //legge in più anche la cella 9 e 18 che noi non utilizziamo
+      //salta la cella 9 e 18
       if ((current_ch == 9) || (current_ch == 18)){}
       else{
         if(bms_ic[current_ic].cells.c_codes[current_ch]> MAXVOLTAGE){
@@ -250,11 +260,11 @@ void init_error_ov (control error_OV[][TOTAL_CH]){
 		}
 	}
 }
-void init_error_ot (control error_OV[][TOTAL_NTC]){
+void init_error_ot (control error_OT[][TOTAL_NTC]){
  for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ntc=0;current_ntc<TOTAL_NTC;current_ntc++){
-			error_OV[current_ic][current_ntc].flag=0;
-      error_OV[current_ic][current_ntc].time=0;
+			error_OT[current_ic][current_ntc].flag=0;
+      error_OT[current_ic][current_ntc].time=0;
 		}
 	}
 }  
@@ -284,8 +294,10 @@ void print_cells_debug()
       Serial.print(" C");
       Serial.print(i+1,DEC);
       Serial.print(":");
-      Serial.print(bms_ic[current_ic].cells.c_codes[i]*0.0001,4); //il 4 potrebbe dare problemi, da vedere
-     //stampa pure il flag
+      Serial.print(bms_ic[current_ic].cells.c_codes[i]*0.0001,4); 
+      Serial.print("(");
+      Serial.print(error_OV[current_ic][i].flag);//stampa il flag per ogni cella per debug
+      Serial.print(")");
       Serial.print(",");
     }
     Serial.println();
@@ -293,32 +305,3 @@ void print_cells_debug()
   Serial.println();
 }
 
-/*
-void read_voltages(float cell_voltage[][TOTAL_CH]){
-    for (int current_ic = 0 ; current_ic < TOTAL_IC; current_ic++) {
-      for (int i = 0; i < bms_ic[0].ic_reg.cell_channels; i++) {
-        if ((i!=9)&&(i!=18)) {
-        int j = 0;
-        cell_voltage[current_ic][j] = bms_ic[current_ic].cells.c_codes[j] * 0.0001;
-        j++;
-        }
-      }
-    }
-  }
-
-void print_voltages(float cell_voltage[][TOTAL_CH]){
-  Serial.println();
-  for(int j=0;j<2;j++){
-    Serial.print(" IC ");
-    Serial.print(j,DEC);
-    Serial.print(", ");
-    for (int i=0;i<TOTAL_CH;i++){
-      Serial.print(" C");
-      Serial.print(i+1,DEC);
-      Serial.print(":");
-      Serial.print(cell_voltage[j][i]);
-      Serial.print(",");
-    }
-    Serial.println();
-  }
-}*/
