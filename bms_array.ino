@@ -111,6 +111,8 @@ void check_error(int error);
 const uint8_t TOTAL_IC = 1;//!<number of ICs in the daisy chain
 const uint8_t TOTAL_CH = 18; // number of channel used per ADC
 const uint8_t TOTAL_NTC = 8; // number of temperatures per ADC
+const uint8_t unused_ch_1=9;//celle non usate
+const uint8_t unused_ch_2=18;//celle no nusate
 
 //ADC Command Configurations
 const uint8_t ADC_OPT = ADC_OPT_DISABLED; // See ltc6813_daisy.h for Options
@@ -119,7 +121,6 @@ const uint8_t ADC_DCP = DCP_DISABLED; // See ltc6813_daisy.h for Options
 const uint8_t CELL_CH_TO_CONVERT = CELL_CH_ALL; // See ltc6813_daisy.h for Options
 const uint8_t AUX_CH_TO_CONVERT = AUX_CH_ALL; // See ltc6813_daisy.h for Options
 const uint8_t STAT_CH_TO_CONVERT = STAT_CH_ALL; // See ltc6813_daisy.h for Options
-
 const uint16_t MEASUREMENT_LOOP_TIME = 500;//milliseconds(mS)
 
 //Under Voltage and Over Voltage Thresholds
@@ -130,6 +131,12 @@ double MAXVOLTAGE = OV_THRESHOLD;    // per convertirla in double nella funzione
 const uint16_t OV_TIME_LIMIT=500;    // limite di tempo in millisecondi OV
 const uint16_t OT_TIME_LIMIT=1000;    // limite di tempo in millisecondi OT
 
+//per algoritmo di carica
+const uint16_t delta_carica = 2000;  // massima differenza tra due batterie in serie 
+const uint16_t soglia_carica = 40000;// soglia tensione carica (4.0V)
+bool in_carica=1;                    // 0->in carica ; 1->non in carica;
+//questo valore viene controllato nel loop in modo tale che sia modificabile 
+//dinamicamente ogni volta che avviene il loop
 
 //Loop Measurement Setup These Variables are ENABLED or DISABLED Remember ALL CAPS
 const uint8_t WRITE_CONFIG = DISABLED; // This is ENABLED or DISABLED
@@ -194,8 +201,9 @@ void loop(){
   
    //---------------------------------//
  
-    voltage_measurment(); //leggo le tensioni dall'adc
-    error_check();//controllo degli errori e scrittura della matrice di errori
+    voltage_measurment();       //leggo le tensioni dall'adc
+    error_check();              //controllo degli errori e scrittura della matrice di errori
+    for (in_carica==0) carica();//faccio finta che non sia in carica
     /*debug*/
     print_cells_debug();
   }
@@ -212,7 +220,7 @@ void error_check(){                   //controllo degli errori
 		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
       /**overcurrent**/
       //salta la cella 9 e 18
-      if ((current_ch == 9) || (current_ch == 18)){}
+      if ((current_ch == unused_ch_1) || (current_ch == unused_ch_2)){}
       else{
         if(bms_ic[current_ic].cells.c_codes[current_ch]> MAXVOLTAGE){
           if (error_OV[current_ic][current_ch].flag==0){           //se c'è un error_OV nuovo lo segno 
@@ -269,6 +277,51 @@ void init_error_ot (control error_OT[][TOTAL_NTC]){
 	}
 }  
 
+void charge() {
+  uint8_t top_voltage[TOTAL_IC];
+  bool canale_carico=0;
+  uint8_t numero_canali_carichi=0;
+
+  for (uint8_t current_ic = 0; current_ic < TOTAL_IC; current_ic++) {
+    canale_carico=0;//0-> tutte cariche ; 1-> non tutte cariche
+    for (uint8_t current_ch = 0; current_ch < TOTAL_CH; current_ch++) {
+      if ((current_ch == unused_ch_1) || (current_ch == unused_ch_2)) {}   //le trascuro
+      else {
+        //aggiorno la tensione massima per ogni IC
+        top_voltage[current_ic]=IsTop(top_voltage[current_ic],bms_ic[current_ic].cells.c_codes[current_ch]);
+        //controllo se la cella non è carica
+        if(bms_ic[current_ic].cells.c_codes[current_ch] < SogliaCarica){
+          canale_carico=1;//se le celle sono tutte cariche allora la variabile rimane 0
+        }
+        else{
+          //bilanciamento finale
+        }
+        if(bms_ic[current_ic].cells.c_codes[current_ch]-top_voltage[current_ic]>delta_carica){
+          //bilanciamento intermedio
+          if(bms_ic[current_ic].cells.c_codes[current_ch]-top_voltage[current_ic]>delta_carica+0.2){
+            //bilanciamento intermedio ma più potente
+            //ferma la carica e bilancia
+          }
+        }
+      }
+    }
+    if(canale_carico==0){
+      //ferma carica del pacco (non so se verrà implementata)
+      numero_canali_carichi++;
+     }
+  }
+  if(numero_canali_carichi==TOTAL_IC){
+    //ferma completamente la carica
+  }
+}
+
+uint8_t IsTop(uint8_t top,uint8_t acutual){
+  //ritorna il valore più grande
+  if (top>actual){
+    return top;
+  }
+  return actual;
+}
 
 void voltage_measurment(){
   wakeup_sleep(TOTAL_IC);
