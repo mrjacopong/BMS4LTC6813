@@ -204,6 +204,7 @@ void loop(){
     voltage_measurment();       //leggo le tensioni dall'adc
     error_check();              //controllo degli errori e scrittura della matrice di errori
     for (in_carica==0) carica();//faccio finta che non sia in carica
+    
     /*debug*/
     print_cells_debug();
   }
