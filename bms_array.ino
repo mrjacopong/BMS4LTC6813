@@ -131,12 +131,23 @@ double MAXVOLTAGE = OV_THRESHOLD;    // per convertirla in double nella funzione
 const uint16_t OV_TIME_LIMIT=500;    // limite di tempo in millisecondi OV
 const uint16_t OT_TIME_LIMIT=1000;    // limite di tempo in millisecondi OT
 
+
 //per algoritmo di carica
 const uint16_t delta_carica = 2000;  // massima differenza tra due batterie in serie 
-const uint16_t soglia_carica = 40000;// soglia tensione carica (4.0V)
-bool in_carica=1;                    // 0->in carica ; 1->non in carica;
+const uint16_t SogliaCarica=41000;   // soglia tensione carica (4.0V)
+bool in_carica=true;                 // true->in carica ; false->non in carica;
+bool IsCharged=false;                //serve per controllare che stiamo caricando
 //questo valore viene controllato nel loop in modo tale che sia modificabile 
 //dinamicamente ogni volta che avviene il loop
+const uint8_t RelayPin=10;           //pin del relay da aprire in caso di errore
+const uint8_t ChargeSwitchPin=11;         //pin dello switch per avviare la carica
+/*--variabili per ntc--*/
+float AA1 = 3.354016 * pow(10, -3);
+float BB1 = 2.569850 * pow(10, -4);
+float CC1 = 2.620131 * pow(10, -6);
+float D1 = 6.383091 * pow(10, -8);
+float Resistenza = 10000;
+
 
 //Loop Measurement Setup These Variables are ENABLED or DISABLED Remember ALL CAPS
 const uint8_t WRITE_CONFIG = DISABLED; // This is ENABLED or DISABLED
@@ -167,7 +178,7 @@ int8_t temperatura[TOTAL_IC][TOTAL_NTC];      //array di temperature
   \struttura per gli errori
  ***********************************************************************/
 struct control{
-  boolean flag;                //0->okay  1->errore
+  boolean flag;                //FALSE->okay  TRUE->errore
   unsigned long time;          //momento in cui si verifica il primo errore
 };
 control error_OV[TOTAL_IC][TOTAL_CH];
@@ -185,14 +196,16 @@ void setup()
   ltc6813_init_reg_limits(TOTAL_IC, bms_ic);
   init_error_ov (error_OV);
   init_error_ot (error_OT);
+  init_pinout();
 }
 
 void loop(){
-  int8_t error = 0;
+  uint8_t error = 0;
   uint32_t conv_time = 0;
   uint8_t user_command;
-  int8_t readIC = 0;
+  uint8_t readIC = 0;
   char input = 0;
+  uint8_t ChargeSwitc=digitalRead (ChargeSwitchPin);
   //--interfaccia utente temporanea--//
   if (Serial.available()){           // Check for user input
     uint8_t user_command;
@@ -203,8 +216,33 @@ void loop(){
  
     voltage_measurment();       //leggo le tensioni dall'adc
     error_check();              //controllo degli errori e scrittura della matrice di errori
-    for (in_carica==0) carica();//faccio finta che non sia in carica
-    
+    while (false) carica();     //faccio finta che non sia in carica
+   
+    /*
+    while (ChargeSwitch==HIGH && !IsCharged) {
+      close_relay(RelayPin);
+      voltage_measurment();
+      if (error_check()) {      //se c'è un errore evito di tornare in questo ciclo
+        IsCharged=true;
+        break;
+      }
+      IsCharged=carica();
+    }
+    if(IsCharged && ChargeSwitc==LOW) {
+      IsCharged=false;
+    }
+    se lo switch è low vuol dire che non voglio caricare
+    appena si triggera entro nel while per la prima volta
+    faccio la carica in loop, appena finisce IsCharged è vero, quindi non entra nel loop di nuovo
+    appena rimetto lo switch in low, vuol dire che non voglio più caricare
+    quindi setto IsCharged falso in modo fa autorizzare la carica 
+    per la prossima volta che voglio caricare
+
+    un po' difficile da capire, ma dovrebbe funzionare
+    */
+
+    Serial.println(ReadTempGrad (3,0));//0 sarebbe il prmio IC
+
     /*debug*/
     print_cells_debug();
   }
@@ -216,108 +254,231 @@ void loop(){
 FUNCTIONS
 *******************************************************************************/
 
-void error_check(){                   //controllo degli errori
+bool error_check(){                                                   //controllo degli errori
   for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
       /**overcurrent**/
-      //salta la cella 9 e 18
+      //salta la cella  unused_ch_1=9 e unused_ch_2=18
       if ((current_ch == unused_ch_1) || (current_ch == unused_ch_2)){}
-      else{
-        if(bms_ic[current_ic].cells.c_codes[current_ch]> MAXVOLTAGE){
-          if (error_OV[current_ic][current_ch].flag==0){           //se c'è un error_OV nuovo lo segno 
-            error_OV[current_ic][current_ch].time=millis();        //e inizializzo il tempo.
-            error_OV[current_ic][current_ch].flag=1;               //se un error_OV è vecchio non c'è bisogno
-          }                                                        //di inizalizzare
-          else{
-          time_check(error_OV[current_ic][current_ch].time, OV_TIME_LIMIT); 
-          } 
-        }
-        else {
-          error_OV[current_ic][current_ch].flag=0;              //in assenza di error_OV il flag è zero
+      if(bms_ic[current_ic].cells.c_codes[current_ch]> MAXVOLTAGE){
+         if (error_OV[current_ic][current_ch].flag==false){          //si triggera l'if se c'è
+          set_new_error(error_OV[current_ic][current_ch]);           //un error_OT nuovo lo segno 
+        }                                                            //e inizializzo il tempo.
+        /*se un error_OV è vecchio non c'è bisogno di flaggarlo
+        ma bisogna controllare che il tempo non ecceda il limite
+        questo avviene nell'else*/
+        else{
+          if(time_check(error_OT[current_ic][current_ch].time, OT_TIME_LIMIT))
+            shoutdown_error(RelayPin); 
+            return true;
         }
       }
+      else reset_error(error_OV[current_ic][current_ch]);           //in asssenza di error_OV il flag è diasttivato
     }
       /**overtemperature**/
     for(uint8_t current_ntc=0;current_ntc<TOTAL_NTC;current_ntc++){
       if(bms_ic[current_ic].aux.a_codes[current_ntc]  > MAXTEMP){
-        if (error_OT[current_ic][current_ntc].flag==0){           //se c'è un error_OT nuovo lo segno 
-          error_OT[current_ic][current_ntc].time=millis();        //e inizializzo il tempo.
-          error_OT[current_ic][current_ntc].flag=1;               //se un error_OV è vecchio non c'è bisogno
-        }                                                         //di inizalizzare
+        if (error_OT[current_ic][current_ntc].flag==false){           //si triggera l'if se c'è  
+          set_new_error(error_OV[current_ic][current_ntc]);           //un error_OT nuovo lo segno 
+        }                                                             //e inizializzo il tempo.
+        /*se un error_OV è vecchio non c'è bisogno di flaggarlo
+          ma bisogna controllare che il tempo non ecceda il limite
+          questo avviene nell'else*/
         else{
-         time_check(error_OT[current_ic][current_ntc].time, OT_TIME_LIMIT); 
+         if(time_check(error_OT[current_ic][current_ntc].time, OT_TIME_LIMIT))
+          shoutdown_error(RelayPin);
+          return true;
         }
       }
-      else error_OT[current_ic][current_ntc].flag=0;              //in asssenza di error_OV il flag è zero
+      else reset_error(error_OT[current_ic][current_ntc]);            //in asssenza di error_OV il flag è diasttivato
      }
   }
+  return false;
+}
+void shoutdown_error(uint8_t pinOut){
+  open_relay(pinOut);
 }
 
-void time_check(unsigned long t_inizio ,uint16_t durata_max ){
+void set_new_error(control errore_da_segnare){
+  errore_da_segnare.time=millis();            
+  errore_da_segnare.flag=true;
+}
+
+void reset_error(control errore_da_resettare){
+  errore_da_resettare.flag=false;
+}
+
+bool time_check(unsigned long t_inizio ,uint16_t durata_max ){        //true se l'errore persiste
   /*controllo della durata dell'errore*/
   if (millis()-t_inizio>durata_max){
-    /*shutdown!!!! macello*/
+    return true;
   }
+  return false;
 }
 
+void init_pinout(){
+  pinMode(RelayPin,OUTPUT);
+  pinMode(ChargeSwitchPin,INPUT);
+}
 
 void init_error_ov (control error_OV[][TOTAL_CH]){
   for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ch=0;current_ch<TOTAL_CH;current_ch++){
-			error_OV[current_ic][current_ch].flag=0;
+			error_OV[current_ic][current_ch].flag=false;
       error_OV[current_ic][current_ch].time=0;
 		}
 	}
 }
+
 void init_error_ot (control error_OT[][TOTAL_NTC]){
  for(uint8_t current_ic=0;current_ic<TOTAL_IC;current_ic++){
 		for(uint8_t current_ntc=0;current_ntc<TOTAL_NTC;current_ntc++){
-			error_OT[current_ic][current_ntc].flag=0;
+			error_OT[current_ic][current_ntc].flag=false;
       error_OT[current_ic][current_ntc].time=0;
 		}
 	}
 }  
 
-void charge() {
+void carica() {
   uint8_t top_voltage[TOTAL_IC];
-  bool canale_carico=0;
-  uint8_t numero_canali_carichi=0;
+  bool modulo_carico=0;
+  uint8_t numero_moduli_carichi=0;
 
   for (uint8_t current_ic = 0; current_ic < TOTAL_IC; current_ic++) {
-    canale_carico=0;//0-> tutte cariche ; 1-> non tutte cariche
+    modulo_carico=true;
+    /* true-> tutte cariche */
+    /* false-> non tutte cariche */
     for (uint8_t current_ch = 0; current_ch < TOTAL_CH; current_ch++) {
-      if ((current_ch == unused_ch_1) || (current_ch == unused_ch_2)) {}   //le trascuro
-      else {
-        //aggiorno la tensione massima per ogni IC
-        top_voltage[current_ic]=IsTop(top_voltage[current_ic],bms_ic[current_ic].cells.c_codes[current_ch]);
-        //controllo se la cella non è carica
-        if(bms_ic[current_ic].cells.c_codes[current_ch] < SogliaCarica){
-          canale_carico=1;//se le celle sono tutte cariche allora la variabile rimane 0
-        }
-        else{
-          //bilanciamento finale
-        }
-        if(bms_ic[current_ic].cells.c_codes[current_ch]-top_voltage[current_ic]>delta_carica){
-          //bilanciamento intermedio
-          if(bms_ic[current_ic].cells.c_codes[current_ch]-top_voltage[current_ic]>delta_carica+0.2){
-            //bilanciamento intermedio ma più potente
-            //ferma la carica e bilancia
-          }
+      if ((current_ch == unused_ch_1)||(current_ch == unused_ch_2)) {}//le trascuro
+      /*aggiorno la tensione massima per ogni IC*/
+      top_voltage[current_ic]=IsTop(top_voltage[current_ic],bms_ic[current_ic].cells.c_codes[current_ch]);
+      /*controllo se la cella non è carica*/
+      if(bms_ic[current_ic].cells.c_codes[current_ch] < SogliaCarica){
+        modulo_carico=false;                                        //se le celle sono tutte cariche
+      }                                                             // allora la variabile rimane true  
+      else{
+        numero_moduli_carichi++;
+        /*bilanciamento finale*/
+      }
+      if(bms_ic[current_ic].cells.c_codes[current_ch]-top_voltage[current_ic]>delta_carica){
+        intermediate_balance(current_ch);
+        if(bms_ic[current_ic].cells.c_codes[current_ch]-top_voltage[current_ic]>delta_carica+0.2){
+          /*bilanciamento intermedio ma più potente*/
+          /*ferma la carica e bilancia*/
+          greater_balance(current_ch,RelayPin);
         }
       }
     }
-    if(canale_carico==0){
-      //ferma carica del pacco (non so se verrà implementata)
-      numero_canali_carichi++;
-     }
   }
-  if(numero_canali_carichi==TOTAL_IC){
-    //ferma completamente la carica
+  if(numero_moduli_carichi==TOTAL_IC){
+    return stop_charge(RelayPin);
   }
+  return true;
 }
 
-uint8_t IsTop(uint8_t top,uint8_t acutual){
-  //ritorna il valore più grande
+bool stop_charge(uint8_t pinOut){
+  open_relay(pinOut);
+  return true;
+}
+
+void greater_balance(int8_t cella,uint8_t pinOut){
+  open_relay(pinOut);
+  set_discharge(cella);
+}
+
+void intermediate_balance(int8_t cella){
+  set_discharge(cella);
+}
+
+void gpio_measurment(){
+  wakeup_sleep(TOTAL_IC);                                             //converte gpio
+  ltc6813_adax(ADC_CONVERSION_MODE , AUX_CH_TO_CONVERT);
+  ltc6813_pollAdc();
+  wakeup_sleep(TOTAL_IC);
+  ltc6813_rdaux(0,TOTAL_IC,bms_ic);                                   // questo serve a caso
+}
+
+float ReadTempGrad (uint8_t pin,uint8_t current_ic){                  //solo il pin passato             
+  gpio_measurment();                                                  //e l'IC passato
+  float Vout = bms_ic[current_ic].aux.a_codes[pin]*0.0001;
+  float Vref2=bms_ic[current_ic].aux.a_codes[5]*0.0001;
+  float Rntc = ((Resistenza * Vref2) / Vout) - Resistenza;
+  float Rdif = Rntc / Resistenza;
+  float Peppa = log(Rdif);
+  float B = BB1 * Peppa;
+  float C = CC1 * (pow(Peppa,2));
+  float D = D1 * (pow(Peppa,3));
+  float sum = AA1 + B + C + D;
+  /*--un po debug--*/
+  Serial.print("Rntc: ");
+  Serial.println(Rntc);
+  Serial.print("Vref2: ");
+  Serial.println(Vref2,4);
+  Serial.print("Vout: ");
+  Serial.println(Vout,4);
+  float Temp = (pow(sum, -1)-274);
+  return (Temp);
+}
+
+void set_discharge(int8_t cella){
+  ltc6813_set_discharge(cella,TOTAL_IC,bms_ic);
+  wakeup_sleep(TOTAL_IC);
+  ltc6813_wrcfg(TOTAL_IC,bms_ic);
+  ltc6813_wrcfgb(TOTAL_IC,bms_ic);
+}
+
+void reset_discharge(){
+  clear_discharge(TOTAL_IC,bms_ic);
+  wakeup_sleep(TOTAL_IC);
+  ltc6813_wrcfg(TOTAL_IC,bms_ic);
+  ltc6813_wrcfgb(TOTAL_IC,bms_ic);
+}
+
+void open_relay(uint8_t relay){
+  digitalWrite(relay, HIGH);
+}
+
+void close_relay(uint8_t relay){
+  digitalWrite(relay, LOW);
+}
+
+void PrintTempGrad (){                                                //misura tutte e le stampa
+  gpio_measurment();
+  for (int current_ic =0 ; current_ic < TOTAL_IC; current_ic++)
+  {
+   
+    Serial.print(" IC ");
+    Serial.print(current_ic+1,DEC);
+    for (int i=0; i < 5; i++)
+    {
+      Serial.print(F(" GPIO-"));
+      Serial.print(i+1,DEC);
+      Serial.print(":");
+      Serial.print(bms_ic[current_ic].aux.a_codes[i]*0.0001,4);
+      Serial.print(",");
+    }
+    Serial.print(F(" Vref2"));
+    Serial.print(":");
+    Serial.print(bms_ic[current_ic].aux.a_codes[5]*0.0001,4);
+    for (int i=6; i < 9; i++)
+    {
+      Serial.print(F(", GPIO-"));
+      Serial.print(i+1,DEC);
+      Serial.print(":");
+      Serial.print(bms_ic[current_ic].aux.a_codes[i]*0.0001,4);
+      Serial.println();
+    }
+  Serial.print("AUX, ");
+    for (int i=0; i < 6; i++)
+    {
+      Serial.print(bms_ic[current_ic].aux.a_codes[i]*0.0001,4);
+      Serial.print(",");
+    }
+  }
+  Serial.println();
+}
+
+uint8_t IsTop(uint8_t top,uint8_t actual){                            //ritorna il valore più grande
   if (top>actual){
     return top;
   }
@@ -332,12 +493,10 @@ void voltage_measurment(){
   Serial.print(((float)conv_time / 1000), 1);
   Serial.println(F("mS"));
   Serial.println();
-  uint8_t error = ltc6813_rdcv(0, TOTAL_IC, bms_ic); // Set to read back all cell voltage registers
-  //check_error(error);
+  ltc6813_rdcv(0, TOTAL_IC, bms_ic);                                  //Set to read back all cell voltage registers
 }
 
-void print_cells_debug()
-{
+void print_cells_debug(){
   for (int current_ic = 0 ; current_ic < TOTAL_IC; current_ic++)
   {
     Serial.print(" IC ");
@@ -350,7 +509,7 @@ void print_cells_debug()
       Serial.print(":");
       Serial.print(bms_ic[current_ic].cells.c_codes[i]*0.0001,4); 
       Serial.print("(");
-      Serial.print(error_OV[current_ic][i].flag);//stampa il flag per ogni cella per debug
+      Serial.print(error_OV[current_ic][i].flag);                     //stampa il flag per ogni cella per debug
       Serial.print(")");
       Serial.print(",");
     }
